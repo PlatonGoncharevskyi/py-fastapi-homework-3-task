@@ -38,4 +38,25 @@ class PasswordResetRequestSchema(BaseModel):
 
 
 class PasswordResetCompleteRequestSchema(BaseModel):
-    message: str = "If you are registered, you will receive an email with instructions."
+    email: EmailStr
+    token: str
+    password: str
+
+
+class UserLoginResponseSchema(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class UserLoginRequestSchema(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenRefreshRequestSchema(BaseModel):
+    refresh_token: str
+
+
+class TokenRefreshResponseSchema(BaseModel):
+    access_token: str
