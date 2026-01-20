@@ -66,7 +66,7 @@ async def activate_user_token(user_act: UserActivationRequestSchema, db: AsyncSe
     user_data = res.scalar_one_or_none()
 
     if not user_data:
-        raise HTTPException(status_code=400, detail="Invalid token or email.")
+        raise HTTPException(status_code=400, detail="Invalid or expired activation token.")
 
     token = user_data.activation_token
     expires_at = token.expires_at
@@ -74,10 +74,12 @@ async def activate_user_token(user_act: UserActivationRequestSchema, db: AsyncSe
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
-    if user_data.is_active is True:
+    if user_data.is_active:
         raise HTTPException(status_code=400, detail="User account is already active.")
 
     if expires_at < datetime.now(timezone.utc):
+        await db.delete(token)
+        await db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired activation token.")
 
     user_data.is_active = True
@@ -120,7 +122,7 @@ async def user_password_reset_complete(user_data: PasswordResetCompleteRequestSc
     res = await db.execute(query)
     user = res.scalar_one_or_none()
 
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(status_code=400, detail="Invalid email or token.")
 
     token = user.password_reset_token
@@ -130,20 +132,22 @@ async def user_password_reset_complete(user_data: PasswordResetCompleteRequestSc
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
     if expires_at < datetime.now(timezone.utc):
+        await db.delete(token)
+        await db.commit()
         raise HTTPException(status_code=400, detail="Invalid email or token.")
 
     try:
         user.password = user_data.password
+        await db.delete(token)
+        await db.commit()
     except Exception:
+        await db.rollback()
         raise HTTPException(status_code=500, detail="An error occurred while resetting the password.")
 
-    await db.delete(token)
-    await db.commit()
-    await db.refresh(user)
     return MessageResponseSchema(message="Password reset successfully.")
 
 
-@router.post("/login/", response_model=UserLoginResponseSchema)
+@router.post("/login/", response_model=UserLoginResponseSchema, status_code=status.HTTP_201_CREATED)
 async def user_login(
         user_data:UserLoginRequestSchema,
         db: AsyncSession = Depends(get_db),
@@ -160,7 +164,7 @@ async def user_login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="User account is not activated.")
 
-    data_to_encode = {"sub": str(user.id)}
+    data_to_encode = {"sub": str(user.id), "user_id": user.id}
     access_token = jwt_manager.create_access_token(data=data_to_encode)
 
     expires_delta = timedelta(days=settings.LOGIN_TIME_DAYS)
@@ -174,12 +178,13 @@ async def user_login(
         db.add(refresh_token_db)
         await db.commit()
     except Exception:
+        await db.rollback()
         raise HTTPException(status_code=500, detail="An error occurred while processing the request.")
 
     return UserLoginResponseSchema(access_token=access_token, refresh_token=refresh_token)
 
 
-@router.post("/refresh/", response_model=TokenRefreshResponseSchema)
+@router.post("/api/v1/accounts/refresh/", response_model=TokenRefreshResponseSchema, status_code=status.HTTP_200_OK)
 async def refresh_token_user(
         user_token: TokenRefreshRequestSchema,
         db: AsyncSession = Depends(get_db),
@@ -207,7 +212,7 @@ async def refresh_token_user(
 
 
 
-    data_to_encode = {"sub": str(user_db_token.user.id)}
+    data_to_encode = {"sub": str(user_db_token.user.id), "user_id": user_db_token.user.id}
     access_token = jwt_manager.create_access_token(data=data_to_encode)
 
     return TokenRefreshResponseSchema(access_token=access_token)
